@@ -222,7 +222,7 @@ div.projects h3 { background: url(../images/projects.png) no-repeat 0% 50%; padd
 #watchers select {width: 95%; display: block;}
 #watchers a.delete {opacity: 0.4;}
 #watchers a.delete:hover {opacity: 1;}
-#watchers img.gravatar {vertical-align: middle;margin-right: 4px;}
+#watchers img.gravatar {vertical-align: middle;margin: 0 4px 2px 0;}
 
 .highlight { background-color: #FCFD8D;}
 .highlight.token-1 { background-color: #faa;}
@@ -438,6 +438,8 @@ div#tab-content-members fieldset label, div#tab-content-memberships fieldset lab
 div#tab-content-members fieldset div, div#tab-content-users fieldset div { max-height: 400px; overflow:auto; }
 
 table.members td.group { padding-left: 20px; background: url(../images/group.png) no-repeat 0% 50%; }
+
+input#principal_search, input#user_search {width:100%}
 
 * html div#tab-content-members fieldset div { height: 450px; }
 

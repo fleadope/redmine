@@ -92,7 +92,7 @@ class Issue < ActiveRecord::Base
   end
   
   def copy_from(arg)
-    issue = arg.is_a?(Issue) ? arg : Issue.find(arg)
+    issue = arg.is_a?(Issue) ? arg : Issue.visible.find(arg)
     self.attributes = issue.attributes.dup.except("id", "root_id", "parent_id", "lft", "rgt", "created_on", "updated_on")
     self.custom_field_values = issue.custom_field_values.inject({}) {|h,v| h[v.custom_field_id] = v.value; h}
     self.status = issue.status
@@ -212,6 +212,7 @@ class Issue < ActiveRecord::Base
     done_ratio
     estimated_hours
     custom_field_values
+    lock_version
   ) unless const_defined?(:SAFE_ATTRIBUTES)
   
   # Safely sets attributes
@@ -481,31 +482,39 @@ class Issue < ActiveRecord::Base
   end
 
   # Saves an issue, time_entry, attachments, and a journal from the parameters
+  # Returns false if save fails
   def save_issue_with_child_records(params, existing_time_entry=nil)
-    if params[:time_entry] && params[:time_entry][:hours].present? && User.current.allowed_to?(:log_time, project)
-      @time_entry = existing_time_entry || TimeEntry.new
-      @time_entry.project = project
-      @time_entry.issue = self
-      @time_entry.user = User.current
-      @time_entry.spent_on = Date.today
-      @time_entry.attributes = params[:time_entry]
-      self.time_entries << @time_entry
-    end
-
-    if valid?
-      attachments = Attachment.attach_files(self, params[:attachments])
-
-      attachments[:files].each {|a| @current_journal.details << JournalDetail.new(:property => 'attachment', :prop_key => a.id, :value => a.filename)}
-      # TODO: Rename hook
-      Redmine::Hook.call_hook(:controller_issues_edit_before_save, { :params => params, :issue => self, :time_entry => @time_entry, :journal => @current_journal})
-      if save
+    Issue.transaction do
+      if params[:time_entry] && params[:time_entry][:hours].present? && User.current.allowed_to?(:log_time, project)
+        @time_entry = existing_time_entry || TimeEntry.new
+        @time_entry.project = project
+        @time_entry.issue = self
+        @time_entry.user = User.current
+        @time_entry.spent_on = Date.today
+        @time_entry.attributes = params[:time_entry]
+        self.time_entries << @time_entry
+      end
+  
+      if valid?
+        attachments = Attachment.attach_files(self, params[:attachments])
+  
+        attachments[:files].each {|a| @current_journal.details << JournalDetail.new(:property => 'attachment', :prop_key => a.id, :value => a.filename)}
         # TODO: Rename hook
-        Redmine::Hook.call_hook(:controller_issues_edit_after_save, { :params => params, :issue => self, :time_entry => @time_entry, :journal => @current_journal})
-        return true
+        Redmine::Hook.call_hook(:controller_issues_edit_before_save, { :params => params, :issue => self, :time_entry => @time_entry, :journal => @current_journal})
+        begin
+          if save
+            # TODO: Rename hook
+            Redmine::Hook.call_hook(:controller_issues_edit_after_save, { :params => params, :issue => self, :time_entry => @time_entry, :journal => @current_journal})
+          else
+            raise ActiveRecord::Rollback
+          end
+        rescue ActiveRecord::StaleObjectError
+          attachments[:files].each(&:destroy)
+          errors.add_to_base l(:notice_locking_conflict)
+          raise ActiveRecord::Rollback
+        end
       end
     end
-    # failure, returns false
-
   end
 
   # Unassigns issues from +version+ if it's no longer shared with issue's project
@@ -591,6 +600,22 @@ class Issue < ActiveRecord::Base
   end
   # End ReportsController extraction
   
+  # Returns an array of projects that current user can move issues to
+  def self.allowed_target_projects_on_move
+    projects = []
+    if User.current.admin?
+      # admin is allowed to move issues to any active (visible) project
+      projects = Project.visible.all
+    elsif User.current.logged?
+      if Role.non_member.allowed_to?(:move_issues)
+        projects = Project.visible.all
+      else
+        User.current.memberships.each {|m| projects << m.project if m.roles.detect {|r| r.allowed_to?(:move_issues)}}
+      end
+    end
+    projects
+  end
+   
   private
   
   def update_nested_set_attributes
